@@ -1,0 +1,87 @@
+name: Build LLVM/MLIR
+
+on:
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: 'LLVM branch/tag (default: main)'
+        required: false
+        default: 'main'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake ninja-build git build-essential \
+          clang lld libncurses-dev mold
+
+    - name: Checkout LLVM
+      uses: actions/checkout@v4
+      with:
+        repository: llvm/llvm-project
+        ref: ${{ inputs.llvm_version || 'main' }}
+        path: llvm-project
+
+    - name: Configure environment
+      run: |
+        echo "LD=/usr/local/bin/mold" >> $GITHUB_ENV
+        echo "LDFLAGS=-fuse-ld=mold" >> $GITHUB_ENV
+
+    - name: Cache LLVM build
+      uses: actions/cache@v3
+      id: cache
+      with:
+        path: |
+          llvm-project/build
+          llvm-project/install
+        key: ${{ runner.os }}-llvm-${{ inputs.llvm_version }}-${{ hashFiles('llvm-project/llvm/CMakeLists.txt') }}
+
+    - name: Configure CMake
+      working-directory: llvm-project
+      run: |
+        cmake -B build -S llvm \
+          -GNinja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DLLVM_ENABLE_PROJECTS="clang;mlir" \
+          -DLLVM_ENABLE_PIC=OFF \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DLLVM_BUILD_LLVM_DYLIB=OFF \
+          -DLLVM_TARGETS_TO_BUILD="X86;AArch64;RISCV" \
+          -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+          -DLLVM_INCLUDE_BENCHMARKS=OFF \
+          -DLLVM_INCLUDE_EXAMPLES=OFF \
+          -DLLVM_ENABLE_BINDINGS=OFF \
+          -DLLVM_ENABLE_TERMINFO=OFF \
+          -DLLVM_BUILD_TESTS=OFF \
+          -DLLVM_ENABLE_ASSERTIONS=ON \
+          -DLLVM_ENABLE_LIBXML2=OFF \
+          -DLLVM_ENABLE_ZLIB=OFF \
+          -DLLVM_ENABLE_ZSTD=OFF \
+          -DLLVM_USE_LINKER=mold \
+          -DLLVM_BUILD_UTILS=ON \
+          -DLLVM_INCLUDE_UTILS=ON \
+          -DLLVM_INSTALL_UTILS=ON \
+          -DLLVM_PARALLEL_LINK_JOBS=$(nproc) \
+          -DLLVM_OPTIMIZED_TABLEGEN=ON
+
+    - name: Build LLVM
+      working-directory: llvm-project
+      run: cmake --build build -j$(nproc)
+
+    - name: Install artifacts
+      working-directory: llvm-project
+      run: |
+        cmake --install build --prefix install
+        tar -czvf llvm-mlir-${{ inputs.llvm_version }}.tar.gz install
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: llvm-mlir-${{ inputs.llvm_version }}-${{ github.run_id }}
+        path: llvm-project/llvm-mlir-${{ inputs.llvm_version }}.tar.gz
